@@ -1,0 +1,263 @@
+name: Build macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  build-macos-dmg:
+    runs-on: macos-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: 确定版本号
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 创建应用图标
+        run: |
+          mkdir -p AppIcon.iconset
+          # 创建一个简单的图标（使用 Python 生成）
+          python3 - <<'EOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+
+          sizes = [16, 32, 64, 128, 256, 512, 1024]
+          os.makedirs("AppIcon.iconset", exist_ok=True)
+
+          for size in sizes:
+              img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+              draw = ImageDraw.Draw(img)
+              # 绘制圆角矩形背景
+              margin = size // 8
+              draw.rounded_rectangle(
+                  [margin, margin, size - margin, size - margin],
+                  radius=size // 5,
+                  fill=(41, 128, 185)
+              )
+              # 绘制文字
+              font_size = size // 3
+              try:
+                  font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+              except:
+                  font = ImageFont.load_default()
+              text = "幕"
+              bbox = draw.textbbox((0, 0), text, font=font)
+              text_w = bbox[2] - bbox[0]
+              text_h = bbox[3] - bbox[1]
+              draw.text(
+                  ((size - text_w) // 2, (size - text_h) // 2 - margin // 4),
+                  text, fill='white', font=font
+              )
+              # 保存不同尺寸
+              if size <= 512:
+                  img.save(f"AppIcon.iconset/icon_{size}x{size}.png")
+              if size >= 32:
+                  img_2x = img.resize((size, size), Image.LANCZOS)
+                  img_2x.save(f"AppIcon.iconset/icon_{size//2}x{size//2}@2x.png")
+
+          print("图标生成完成")
+          EOF
+          pip install pillow -q
+          python3 - <<'EOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+
+          sizes = [16, 32, 64, 128, 256, 512, 1024]
+          os.makedirs("AppIcon.iconset", exist_ok=True)
+
+          for size in sizes:
+              img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+              draw = ImageDraw.Draw(img)
+              margin = size // 8
+              draw.rounded_rectangle(
+                  [margin, margin, size - margin, size - margin],
+                  radius=size // 5,
+                  fill=(41, 128, 185)
+              )
+              img.save(f"AppIcon.iconset/icon_{size}x{size}.png")
+              if size >= 32:
+                  img.save(f"AppIcon.iconset/icon_{size//2}x{size//2}@2x.png")
+          EOF
+          iconutil -c icns AppIcon.iconset -o AppIcon.icns || echo "iconutil 完成"
+
+      - name: 创建 PyInstaller spec 文件
+        run: |
+          cat > mubu_analyzer.spec << 'SPEC'
+          # -*- mode: python ; coding: utf-8 -*-
+          import os
+
+          block_cipher = None
+
+          a = Analysis(
+              ['main.py'],
+              pathex=['.'],
+              binaries=[],
+              datas=[
+                  ('.env.example', '.'),
+                  ('prompts.py', '.'),
+              ],
+              hiddenimports=[
+                  'openai',
+                  'fitz',
+                  'pymupdf',
+                  'tqdm',
+                  'tenacity',
+                  'pandas',
+                  'openpyxl',
+                  'dotenv',
+              ],
+              hookspath=[],
+              hooksconfig={},
+              runtime_hooks=[],
+              excludes=[],
+              win_no_prefer_redirects=False,
+              win_private_assemblies=False,
+              cipher=block_cipher,
+              noarchive=False,
+          )
+
+          pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+          exe = EXE(
+              pyz,
+              a.scripts,
+              [],
+              exclude_binaries=True,
+              name='幕布AI分析工具',
+              debug=False,
+              bootloader_ignore_signals=False,
+              strip=False,
+              upx=True,
+              console=True,
+              disable_windowed_traceback=False,
+              target_arch=None,
+              codesign_identity=None,
+              entitlements_file=None,
+          )
+
+          coll = COLLECT(
+              exe,
+              a.binaries,
+              a.zipfiles,
+              a.datas,
+              strip=False,
+              upx=True,
+              upx_exclude=[],
+              name='幕布AI分析工具',
+          )
+
+          app = BUNDLE(
+              coll,
+              name='幕布AI分析工具.app',
+              icon='AppIcon.icns',
+              bundle_identifier='com.mubu.ai.analyzer',
+              info_plist={
+                  'NSPrincipalClass': 'NSApplication',
+                  'NSAppleScriptEnabled': False,
+                  'CFBundleDocumentTypes': [],
+                  'CFBundleShortVersionString': '${{ steps.version.outputs.VERSION }}',
+                  'CFBundleVersion': '${{ steps.version.outputs.VERSION }}',
+                  'NSHumanReadableCopyright': 'MIT License',
+              },
+          )
+          SPEC
+
+      - name: 使用 PyInstaller 打包
+        run: |
+          pyinstaller mubu_analyzer.spec --clean --noconfirm
+
+      - name: 创建应用目录结构
+        run: |
+          APP_DIR="dist/幕布AI分析工具.app"
+          # 在 .app 包内创建用户数据目录
+          mkdir -p "$APP_DIR/Contents/Resources/input_pdfs"
+          mkdir -p "$APP_DIR/Contents/Resources/output"
+          mkdir -p "$APP_DIR/Contents/Resources/logs"
+          # 复制配置文件示例
+          cp .env.example "$APP_DIR/Contents/Resources/.env.example"
+          echo "应用目录结构创建完成"
+
+      - name: 安装 create-dmg 并打包 DMG
+        run: |
+          brew install create-dmg
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          create-dmg \
+            --volname "幕布AI分析工具 v${VERSION}" \
+            --volicon "AppIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "幕布AI分析工具.app" 175 190 \
+            --hide-extension "幕布AI分析工具.app" \
+            --app-drop-link 425 190 \
+            --background-color "#f0f0f0" \
+            "幕布AI分析工具_v${VERSION}_macOS.dmg" \
+            "dist/" || \
+          hdiutil create \
+            -volname "幕布AI分析工具 v${VERSION}" \
+            -srcfolder "dist/" \
+            -ov \
+            -format UDZO \
+            "幕布AI分析工具_v${VERSION}_macOS.dmg"
+
+          echo "DMG 打包完成"
+          ls -lh *.dmg
+
+      - name: 上传 DMG 为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mubu-ai-analyzer-dmg
+          path: "*.dmg"
+          retention-days: 30
+
+      - name: 创建 GitHub Release 并上传 DMG
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "幕布AI分析工具 v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## 幕布知识库 AI 批量分析工具 v${{ steps.version.outputs.VERSION }}
+
+            ### 下载安装
+            点击下方的 `.dmg` 文件下载，双击安装到 Mac 应用程序目录。
+
+            ### 使用步骤
+            1. 安装后首次运行，在 `~/.mubu_analyzer/` 目录中会生成 `.env` 配置文件
+            2. 用文本编辑器打开 `.env`，填入你的 AI API Key
+            3. 将幕布导出的 PDF 放入 `input_pdfs/` 目录
+            4. 运行程序，选择分析模式
+
+            ### 支持的 AI 模型
+            DeepSeek / Kimi / 通义千问 / ChatGPT / 智谱 GLM 等
+          files: "*.dmg"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
