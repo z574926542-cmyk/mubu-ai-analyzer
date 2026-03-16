@@ -1,16 +1,16 @@
-name: 手动触发发布 DMG
+name: 手动触发发布 DMG (GUI版)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (例如: 1.0.0)'
+        description: '版本号 (例如: 1.1.0)'
         required: true
-        default: '1.0.0'
+        default: '1.1.0'
       release_notes:
         description: '更新说明'
         required: false
-        default: '幕布AI分析工具首次发布'
+        default: '新增图形界面，双击即可运行'
 
 jobs:
   build-and-release:
@@ -38,104 +38,46 @@ jobs:
           import os, subprocess
 
           os.makedirs("AppIcon.iconset", exist_ok=True)
-          sizes = [16, 32, 128, 256, 512]
+          sizes = [16, 32, 128, 256, 512, 1024]
 
           for size in sizes:
               img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
               draw = ImageDraw.Draw(img)
-              m = size // 8
-              draw.rounded_rectangle([m, m, size-m, size-m], radius=size//5, fill=(41, 128, 185))
-              # 绘制简单的"幕"字形状（用矩形代替）
-              bar_h = size // 8
-              bar_w = size * 3 // 4
+              m = max(2, size // 8)
+              # 渐变蓝紫色背景
+              draw.rounded_rectangle([m, m, size-m, size-m], radius=size//5, fill=(100, 80, 240))
+              # 绘制三条横线（代表文档/大纲）
+              bar_h = max(2, size // 10)
+              bar_w = size * 11 // 16
               cx = size // 2
-              for i, y_ratio in enumerate([0.3, 0.5, 0.7]):
+              for y_ratio in [0.35, 0.52, 0.69]:
                   y = int(size * y_ratio)
                   draw.rectangle([cx - bar_w//2, y - bar_h//2, cx + bar_w//2, y + bar_h//2], fill='white')
-              img.save(f"AppIcon.iconset/icon_{size}x{size}.png")
-              img.save(f"AppIcon.iconset/icon_{size//2 if size > 16 else 16}x{size//2 if size > 16 else 16}@2x.png")
+              # 小圆点
+              dot_r = max(2, size // 14)
+              dot_x = cx - bar_w//2 - dot_r*2
+              for y_ratio in [0.35, 0.52, 0.69]:
+                  y = int(size * y_ratio)
+                  draw.ellipse([dot_x - dot_r, y - dot_r, dot_x + dot_r, y + dot_r], fill=(180, 220, 255))
 
-          subprocess.run(["iconutil", "-c", "icns", "AppIcon.iconset", "-o", "AppIcon.icns"])
+              img.save(f"AppIcon.iconset/icon_{size}x{size}.png")
+              if size >= 32:
+                  half = size // 2
+                  img_half = img.resize((half, half), Image.LANCZOS)
+                  img_half.save(f"AppIcon.iconset/icon_{half}x{half}@2x.png")
+
+          subprocess.run(["iconutil", "-c", "icns", "AppIcon.iconset", "-o", "AppIcon.icns"], check=True)
           print("图标生成完成")
           EOF
 
-      - name: 创建启动脚本（用于 .app 包）
+      - name: 创建 PyInstaller spec (GUI版)
         run: |
-          cat > app_launcher.py << 'LAUNCHER'
-          #!/usr/bin/env python3
-          """
-          app_launcher.py
-          Mac .app 包的图形化启动入口
-          提供简单的终端交互界面
-          """
-          import os
-          import sys
-          import subprocess
-          from pathlib import Path
-
-          # 确定用户数据目录
-          HOME = Path.home()
-          DATA_DIR = HOME / ".mubu_analyzer"
-          DATA_DIR.mkdir(exist_ok=True)
-          (DATA_DIR / "input_pdfs").mkdir(exist_ok=True)
-          (DATA_DIR / "output").mkdir(exist_ok=True)
-          (DATA_DIR / "logs").mkdir(exist_ok=True)
-
-          # 如果没有 .env 文件，从示例复制
-          env_file = DATA_DIR / ".env"
-          if not env_file.exists():
-              # 获取 .app 包内的资源路径
-              if getattr(sys, 'frozen', False):
-                  bundle_dir = Path(sys._MEIPASS)
-              else:
-                  bundle_dir = Path(__file__).parent
-              example = bundle_dir / ".env.example"
-              if example.exists():
-                  import shutil
-                  shutil.copy(example, env_file)
-
-          # 切换到数据目录运行
-          os.chdir(DATA_DIR)
-
-          # 设置环境变量让 main.py 能找到数据目录
-          os.environ["PDF_INPUT_DIR"] = str(DATA_DIR / "input_pdfs")
-          os.environ["OUTPUT_DIR"] = str(DATA_DIR / "output")
-
-          # 加载 .env
-          from dotenv import load_dotenv
-          load_dotenv(env_file)
-
-          print(f"""
-          ╔══════════════════════════════════════════════════════════╗
-          ║          幕布知识库 AI 批量分析工具                       ║
-          ╚══════════════════════════════════════════════════════════╝
-
-          数据目录：{DATA_DIR}
-          PDF 目录：{DATA_DIR / 'input_pdfs'}
-          输出目录：{DATA_DIR / 'output'}
-          """)
-
-          # 检查 API Key
-          api_key = os.getenv("API_KEY", "")
-          if not api_key or api_key == "你的API_Key填在这里":
-              print(f"⚠️  请先配置 API Key！")
-              print(f"   用文本编辑器打开：{env_file}")
-              print(f"   填写 API_KEY=你的密钥")
-              input("\n按 Enter 键退出...")
-              sys.exit(0)
-
-          # 运行主程序
-          sys.argv = ["main.py"]
-          exec(open(os.path.join(os.path.dirname(__file__) if not getattr(sys, 'frozen', False) else sys._MEIPASS, "main.py")).read())
-          LAUNCHER
-
-      - name: 创建 PyInstaller spec
-        run: |
-          cat > mubu_analyzer.spec << 'SPEC'
+          VERSION="${{ github.event.inputs.version }}"
+          cat > mubu_gui.spec << SPEC
           # -*- mode: python ; coding: utf-8 -*-
           block_cipher = None
           a = Analysis(
-              ['app_launcher.py'],
+              ['gui_app.py'],
               pathex=['.'],
               binaries=[],
               datas=[
@@ -146,33 +88,48 @@ jobs:
                   ('analyzer.py', '.'),
                   ('prompts.py', '.'),
               ],
-              hiddenimports=['openai','fitz','pymupdf','tqdm','tenacity','pandas','openpyxl','dotenv','pkg_resources'],
+              hiddenimports=[
+                  'openai', 'fitz', 'pymupdf', 'tqdm', 'tenacity',
+                  'pandas', 'openpyxl', 'dotenv', 'tkinter',
+                  'tkinter.ttk', 'tkinter.filedialog', 'tkinter.messagebox',
+                  'tkinter.scrolledtext', 'pkg_resources',
+              ],
               hookspath=[],
               runtime_hooks=[],
               excludes=[],
               cipher=block_cipher,
           )
           pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-          exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-              name='幕布AI分析工具', debug=False, strip=False, upx=True, console=True)
-          coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas, strip=False, upx=True, name='幕布AI分析工具')
-          app = BUNDLE(coll, name='幕布AI分析工具.app', icon='AppIcon.icns',
+          exe = EXE(pyz, a.scripts, [],
+              exclude_binaries=True,
+              name='幕布AI分析工具',
+              debug=False, strip=False, upx=True,
+              console=False,
+              icon='AppIcon.icns')
+          coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas,
+              strip=False, upx=True, name='幕布AI分析工具')
+          app = BUNDLE(coll,
+              name='幕布AI分析工具.app',
+              icon='AppIcon.icns',
               bundle_identifier='com.mubu.ai.analyzer',
               info_plist={
-                  'CFBundleShortVersionString': '${{ github.event.inputs.version }}',
-                  'CFBundleVersion': '${{ github.event.inputs.version }}',
+                  'CFBundleShortVersionString': '${VERSION}',
+                  'CFBundleVersion': '${VERSION}',
                   'NSHumanReadableCopyright': 'MIT License',
                   'LSMinimumSystemVersion': '11.0',
+                  'NSHighResolutionCapable': True,
+                  'CFBundleName': '幕布AI分析工具',
+                  'CFBundleDisplayName': '幕布AI分析工具',
               })
           SPEC
 
       - name: 打包 .app
         run: |
-          pyinstaller mubu_analyzer.spec --clean --noconfirm
-          echo "打包完成，文件列表："
+          pyinstaller mubu_gui.spec --clean --noconfirm
+          echo "打包完成："
           ls -lh dist/
 
-      - name: 安装 create-dmg 并制作 DMG
+      - name: 制作 DMG
         run: |
           brew install create-dmg
           VERSION="${{ github.event.inputs.version }}"
@@ -205,13 +162,13 @@ jobs:
           path: "*.dmg"
           retention-days: 90
 
-      - name: 创建 Git Tag 并发布 Release
+      - name: 创建 Git Tag
         run: |
           VERSION="${{ github.event.inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}" || echo "Tag 已存在"
-          git push origin "v${VERSION}" || echo "Tag 推送完成"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}" 2>/dev/null || echo "Tag 已存在"
+          git push origin "v${VERSION}" 2>/dev/null || echo "Tag 推送完成"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -228,24 +185,24 @@ jobs:
             ---
 
             ### 安装方法
-            1. 下载下方的 `.dmg` 文件
-            2. 双击打开，将 **幕布AI分析工具** 拖入 **Applications（应用程序）** 文件夹
-            3. 首次运行时，右键点击 → 打开（绕过 Gatekeeper）
+            1. 下载下方的 `.dmg` 文件（约 100MB）
+            2. 双击打开 DMG，将 **幕布AI分析工具** 拖入 **Applications（应用程序）** 文件夹
+            3. 首次运行：在 Finder 中右键点击图标 → **打开**（绕过 Gatekeeper 安全提示）
 
-            ### 首次配置
-            1. 运行后，程序会在 `~/.mubu_analyzer/` 目录自动生成 `.env` 配置文件
-            2. 用文本编辑器打开该文件，填入你的 AI API Key
-            3. 将幕布导出的 PDF 放入 `~/.mubu_analyzer/input_pdfs/` 目录
-            4. 重新运行程序，选择分析模式
+            ### 首次使用
+            1. 打开应用后，点击左侧「AI 配置」，填入您的 AI API Key
+            2. 点击「PDF 文件」，将幕布导出的 PDF 放入分析目录
+            3. 点击「开始分析」，选择模式运行
+            4. 分析完成后在「查看结果」中查看报告
 
             ### 支持的 AI 模型
-            | 模型 | 提供商 |
-            |------|--------|
-            | deepseek-chat | DeepSeek（推荐，性价比高） |
-            | moonshot-v1-128k | Kimi（月之暗面） |
-            | qwen-long | 通义千问（阿里云） |
-            | gpt-4o | OpenAI（ChatGPT） |
-            | glm-4-long | 智谱 AI |
+            | 模型 | 提供商 | 推荐指数 |
+            |------|--------|----------|
+            | deepseek-chat | DeepSeek | ⭐⭐⭐⭐⭐（性价比最高） |
+            | moonshot-v1-128k | Kimi | ⭐⭐⭐⭐ |
+            | qwen-long | 通义千问 | ⭐⭐⭐⭐ |
+            | gpt-4o | OpenAI | ⭐⭐⭐ |
+            | glm-4-long | 智谱 AI | ⭐⭐⭐ |
 
           files: "*.dmg"
           draft: false
